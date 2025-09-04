@@ -1,96 +1,76 @@
-/*
- * Iptv-Proxy is a project to proxyfie an m3u file and to proxyfie an Xtream iptv service (client API).
- * Copyright (C) 2020  Pierre-Emmanuel Jacquier
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */
-
 package server
 
 import (
 	"fmt"
-	"net/url"
-	"path"
-	"strings"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
 )
 
-func (c *Config) routes(r *gin.RouterGroup) {
-	r = r.Group(c.CustomEndpoint)
-
-	// Xtream service endpoints
-	if c.ProxyConfig.XtreamBaseURL != "" {
-		c.xtreamRoutes(r)
-		if strings.Contains(c.XtreamBaseURL, c.RemoteURL.Host) &&
-			c.XtreamUser.String() == c.RemoteURL.Query().Get("username") &&
-			c.XtreamPassword.String() == c.RemoteURL.Query().Get("password") {
-
-			r.GET("/"+c.M3UFileName, c.authenticate, c.xtreamGetAuto)
-			r.POST("/"+c.M3UFileName, c.authenticate, c.xtreamGetAuto)
-
-			return
-		}
-	}
-
-	c.m3uRoutes(r)
+type Config struct {
+	// Add any necessary fields, e.g., proxy config
 }
 
-func (c *Config) xtreamRoutes(r *gin.RouterGroup) {
-	getphp := gin.HandlerFunc(c.xtreamGet)
-	if c.XtreamGenerateApiGet {
-		getphp = c.xtreamApiGet
-	}
-	r.GET("/get.php", c.authenticate, getphp)
-	r.POST("/get.php", c.authenticate, getphp)
-	r.GET("/apiget", c.authenticate, c.xtreamApiGet)
-	r.GET("/player_api.php", c.authenticate, c.xtreamPlayerAPIGET)
-	r.POST("/player_api.php", c.appAuthenticate, c.xtreamPlayerAPIPOST)
-	r.GET("/xmltv.php", c.authenticate, c.xtreamXMLTV)
-	r.GET(fmt.Sprintf("/%s/%s/:id", c.User, c.Password), c.xtreamStreamHandler)
-	r.GET(fmt.Sprintf("/live/%s/%s/:id", c.User, c.Password), c.xtreamStreamLive)
-	r.GET(fmt.Sprintf("/timeshift/%s/%s/:duration/:start/:id", c.User, c.Password), c.xtreamStreamTimeshift)
-	r.GET(fmt.Sprintf("/movie/%s/%s/:id", c.User, c.Password), c.xtreamStreamMovie)
-	r.GET(fmt.Sprintf("/series/%s/%s/:id", c.User, c.Password), c.xtreamStreamSeries)
-	r.GET(fmt.Sprintf("/hlsr/:token/%s/%s/:channel/:hash/:chunk", c.User, c.Password), c.xtreamHlsrStream)
-	r.GET("/hls/:token/:chunk", c.xtreamHlsStream)
-	r.GET("/play/:token/:type", c.xtreamStreamPlay)
+// Serve sets up all routes
+func (c *Config) Serve(r *gin.Engine) {
+	c.routes(r)
 }
 
-func (c *Config) m3uRoutes(r *gin.RouterGroup) {
-	r.GET("/"+c.M3UFileName, c.authenticate, c.getM3U)
-	r.POST("/"+c.M3UFileName, c.authenticate, c.getM3U)
+// routes registers all routes
+func (c *Config) routes(r *gin.Engine) {
+	// Base group
+	group := r.Group("/")
 
-	for i, track := range c.playlist.Tracks {
-		trackConfig := &Config{
-			ProxyConfig: c.ProxyConfig,
-			track:       &c.playlist.Tracks[i],
-		}
+	// M3U endpoints
+	group.GET("iptv.m3u", c.getM3U)
+	group.POST("iptv.m3u", c.getM3U)
 
-		u, err := url.Parse(track.URI)
-		if err != nil {
-			continue // skip invalid URLs
-		}
-
-		// Encode filename to make it safe for Gin
-		cleanSegment := url.PathEscape(path.Base(u.Path))
-
-		// Use query parameters via c.Request.URL.RawQuery inside handler, not in route
-		if strings.HasSuffix(track.URI, ".m3u8") {
-			r.GET(fmt.Sprintf("/%s/%s/%s/%d/:id", c.endpointAntiColision, c.User, c.Password, i), trackConfig.m3u8ReverseProxy)
-		} else {
-			r.GET(fmt.Sprintf("/%s/%s/%s/%d/%s", c.endpointAntiColision, c.User, c.Password, i, cleanSegment), trackConfig.reverseProxy)
-		}
+	// Reverse proxy routes for HLS / .ts / .m3u8 / live.php
+	// Only numeric index in path, everything else handled dynamically
+	for i := 0; i < 20; i++ {
+		// Matches /{space}/{user}/{session}/{i}/{file}
+		group.GET(fmt.Sprintf("/:space/:user/:session/%d/:file", i), c.reverseProxy)
 	}
+}
+
+// getM3U serves M3U playlist
+func (c *Config) getM3U(ctx *gin.Context) {
+	// Implement your logic to return the M3U playlist
+	ctx.String(http.StatusOK, "#EXTM3U\n# Playlist content here")
+}
+
+// reverseProxy dynamically forwards request
+func (c *Config) reverseProxy(ctx *gin.Context) {
+	space := ctx.Param("space")
+	user := ctx.Param("user")
+	session := ctx.Param("session")
+	index := ctx.Param("file") // the wildcard file segment
+
+	// Preserve the original query string (MAC, stream, token, extension)
+	query := ctx.Request.URL.RawQuery
+
+	// Construct the upstream URL
+	targetURL := fmt.Sprintf("http://upstream.server/%s/%s/%s/%s?%s", space, user, session, index, query)
+
+	// Forward request to upstream (simplified)
+	resp, err := http.Get(targetURL)
+	if err != nil {
+		ctx.String(http.StatusBadGateway, fmt.Sprintf("Proxy error: %v", err))
+		return
+	}
+	defer resp.Body.Close()
+
+	// Copy response headers
+	for k, v := range resp.Header {
+		ctx.Header(k, v[0])
+	}
+
+	// Copy status code
+	ctx.Status(resp.StatusCode)
+
+	// Copy body
+	ctx.Stream(func(w io.Writer) bool {
+		_, err := io.Copy(w, resp.Body)
+		return err == nil
+	})
 }
