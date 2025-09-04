@@ -83,9 +83,10 @@ func (c *Config) m3uRoutes(r *gin.RouterGroup) {
 			continue // skip invalid URLs
 		}
 
-		// Encode the filename safely for Gin
+		// Encode filename to make it safe for Gin
 		cleanSegment := url.PathEscape(path.Base(u.Path))
 
+		// Use query parameters via c.Request.URL.RawQuery inside handler, not in route
 		if strings.HasSuffix(track.URI, ".m3u8") {
 			r.GET(fmt.Sprintf("/%s/%s/%s/%d/:id", c.endpointAntiColision, c.User, c.Password, i), trackConfig.m3u8ReverseProxy)
 		} else {
