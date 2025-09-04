@@ -30,7 +30,7 @@ import (
 func (c *Config) routes(r *gin.RouterGroup) {
 	r = r.Group(c.CustomEndpoint)
 
-	// Xtream service endopoints
+	// Xtream service endpoints
 	if c.ProxyConfig.XtreamBaseURL != "" {
 		c.xtreamRoutes(r)
 		if strings.Contains(c.XtreamBaseURL, c.RemoteURL.Host) &&
@@ -38,7 +38,6 @@ func (c *Config) routes(r *gin.RouterGroup) {
 			c.XtreamPassword.String() == c.RemoteURL.Query().Get("password") {
 
 			r.GET("/"+c.M3UFileName, c.authenticate, c.xtreamGetAuto)
-			// XXX Private need: for external Android app
 			r.POST("/"+c.M3UFileName, c.authenticate, c.xtreamGetAuto)
 
 			return
@@ -71,7 +70,6 @@ func (c *Config) xtreamRoutes(r *gin.RouterGroup) {
 
 func (c *Config) m3uRoutes(r *gin.RouterGroup) {
 	r.GET("/"+c.M3UFileName, c.authenticate, c.getM3U)
-	// XXX Private need: for external Android app
 	r.POST("/"+c.M3UFileName, c.authenticate, c.getM3U)
 
 	for i, track := range c.playlist.Tracks {
@@ -80,17 +78,18 @@ func (c *Config) m3uRoutes(r *gin.RouterGroup) {
 			track:       &c.playlist.Tracks[i],
 		}
 
-		// Strip query params to prevent Gin wildcard errors
 		u, err := url.Parse(track.URI)
 		if err != nil {
 			continue // skip invalid URLs
 		}
-		cleanPath := path.Base(u.Path)
+
+		// Encode the filename safely for Gin
+		cleanSegment := url.PathEscape(path.Base(u.Path))
 
 		if strings.HasSuffix(track.URI, ".m3u8") {
 			r.GET(fmt.Sprintf("/%s/%s/%s/%d/:id", c.endpointAntiColision, c.User, c.Password, i), trackConfig.m3u8ReverseProxy)
 		} else {
-			r.GET(fmt.Sprintf("/%s/%s/%s/%d/%s", c.endpointAntiColision, c.User, c.Password, i, cleanPath), trackConfig.reverseProxy)
+			r.GET(fmt.Sprintf("/%s/%s/%s/%d/%s", c.endpointAntiColision, c.User, c.Password, i, cleanSegment), trackConfig.reverseProxy)
 		}
 	}
 }
